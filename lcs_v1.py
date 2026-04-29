@@ -101,13 +101,13 @@ def _compute_edit_distance_task(args: Tuple[int, int, bytes, bytes]) -> Tuple[in
 
 
 
-def build_distance_heap(items: Dict[int, bytes], active_ids: set[int], pool=None) -> list[Tuple[int, int, int]]:
+def build_distance_heap(items: Dict[int, bytes], active_ids: set[int], pool=None, logger: logging.Logger = None) -> list[Tuple[int, int, int]]:
     """Generates a fresh pairwise distance min-heap for active sequences. O(N^2)"""
 
     heap: list[Tuple[int, int, int]] = []
     ids = list(active_ids)
     n = len(ids)
-    
+
     tasks: List[Tuple[int, int, bytes, bytes]] = []
     for ix in range(n):
         i = ids[ix]
@@ -115,13 +115,31 @@ def build_distance_heap(items: Dict[int, bytes], active_ids: set[int], pool=None
             j = ids[jx]
             tasks.append((i, j, items[i], items[j]))
 
-    if pool and tasks: # mutli-processing
-        for dist, i, j in pool.imap(_compute_edit_distance_task, tasks, chunksize=1):
+    total = len(tasks)
+    log_interval = max(1, total // 10)  # log every ~10%
+    t_heap_start = monotonic()
+
+    if logger:
+        logger.info(f"  Building distance heap: {total} pairs to compute ({n} active sequences)...")
+
+    if pool and tasks:  # multi-processing
+        for done, (dist, i, j) in enumerate(pool.imap(_compute_edit_distance_task, tasks, chunksize=4), 1):
             heap.append((dist, i, j))
-    else: # single-process mode
-        for i, j, a_bytes, b_bytes in tasks:
+            if logger and done % log_interval == 0:
+                elapsed = monotonic() - t_heap_start
+                eta = elapsed / done * (total - done)
+                logger.info(f"  [{done}/{total} pairs | {done*100//total}% | elapsed {elapsed:.0f}s | ETA ~{eta:.0f}s]")
+    else:  # single-process mode
+        for done, (i, j, a_bytes, b_bytes) in enumerate(tasks, 1):
             dist = edlib.align(a_bytes, b_bytes, mode="NW", task="distance")['editDistance']
             heap.append((dist, i, j))
+            if logger and done % log_interval == 0:
+                elapsed = monotonic() - t_heap_start
+                eta = elapsed / done * (total - done)
+                logger.info(f"  [{done}/{total} pairs | {done*100//total}% | elapsed {elapsed:.0f}s | ETA ~{eta:.0f}s]")
+
+    if logger:
+        logger.info(f"  Heap built in {monotonic() - t_heap_start:.1f}s")
 
     heapq.heapify(heap)
     return heap
@@ -139,7 +157,8 @@ def k_lcs(sequences: list[bytes], *, logger: logging.Logger, workers: int) -> by
     # Dictionary mapping sequence ID directly to its byte payload
     items: Dict[int, bytes] = {id: seq for id, seq in enumerate(sequences)}
     active = set(items.keys())
-    
+
+    total_steps = len(sequences) - 1
     pool = None
     if workers:
         pool = Pool(processes=workers, initializer=worker_init)
@@ -148,13 +167,14 @@ def k_lcs(sequences: list[bytes], *, logger: logging.Logger, workers: int) -> by
     try:
         # Loop until only one sequence (i.e., the final LCS) is left
         while len(active) > 1:
+            logger.info(f"[step {step}/{total_steps}] {len(active)} sequences remaining — rebuilding distance heap...")
             # (Re)Build a fresh min-heap containing only valid active distances
-            heap = build_distance_heap(items, active, pool)
-            
+            heap = build_distance_heap(items, active, pool, logger=logger)
+
             # Get the closest pair (eventual ties are resolved by picking the smallest IDs)
             dist, i, j = heapq.heappop(heap)
-            
-            logger.info(f"[step {step}] closest pair: ({i},{j}) |A|={len(items[i])} |B|={len(items[j])} d={dist}")
+
+            logger.info(f"[step {step}/{total_steps}] closest pair: ({i},{j}) |A|={len(items[i])} |B|={len(items[j])} d={dist}")
 
             # Compute LCS
             t0 = monotonic()
@@ -174,6 +194,7 @@ def k_lcs(sequences: list[bytes], *, logger: logging.Logger, workers: int) -> by
                     if k != keep_id:
                         items[k] = bytes(b for b in items[k] if b in allowed)
 
+            logger.info(f"[step {step}/{total_steps}] done — {len(active)} sequences remaining")
             step += 1
 
     except KeyboardInterrupt:
