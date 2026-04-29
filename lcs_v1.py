@@ -279,6 +279,18 @@ def clean_block(tokens: list[str]) -> list[str] | None:
     if len(hex_tokens)<8:
         return None
     
+    #filter if too many repeated bytes 
+    unique_ratio = len(set(hex_tokens)) / len(hex_tokens)
+    if unique_ratio < 0.25:
+        return None
+
+    #filter if too many consecutive bytes
+    byte_vals = [int(t, 16) for t in hex_tokens]
+    diffs = [byte_vals[i+1] - byte_vals[i] for i in range(len(byte_vals)-1)]
+    if len(diffs) > 20 and sum(1 for d in diffs if d == 1) / len(diffs) > 0.85:
+        return None
+
+
     #filter too many null bytes
     null_count=sum(1 for t in hex_tokens if t == "00")
     if null_count/len(hex_tokens)>0.4:
