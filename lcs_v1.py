@@ -146,6 +146,61 @@ def build_distance_heap(items: Dict[int, bytes], active_ids: set[int], pool=None
 
 
 
+
+
+
+#parameters clustering
+
+cluster_sample_bytes=10000 #take the first 10KB of each sample to compute the distance for clustering
+cluster_threshold=0.3 #seuil behind it 2 samples are considered similar to be in same cluster
+
+
+def cluster_samples(sequences: list[bytes], logger: logging.Logger):
+    '''
+    regroup the sequences in cluster via union find
+    '''
+    n=len(sequences)
+    short= [s[:cluster_sample_bytes] for s in sequences]#take short prefix for fast distance computation 
+    parent=[]
+    for i in range(n):
+        parent.append(i)
+
+    def find(x):
+        while parent[x]!=x:
+            parent[x]=parent[parent[x]]
+            x=parent[x]
+        return x
+    
+    def union(x,y):
+        parent[find(x)]=find(y)
+
+
+    for i in range(n):
+        for j in range(i+1,n):
+            #compute distance for pair on short prefix
+            result=edlib.align(short[i],short[j], mode="NW", task="distance")
+            d=result["editDistance"]
+            norm=d/max(len(short[i]),len(short[j]))#normalize distance (between 0 and1)
+
+            if norm<cluster_threshold:
+                union(i,j)#if similar (behind threshold), same cluster
+    
+    #regroup samples by cluster
+    clusters={}
+    for i in range(n):
+        s=find(i)
+        if s not in clusters:
+            clusters[s]=[]
+        clusters[s].append(i)
+    
+    result=list(clusters.values())
+    logger.info(f"Clustering results:{len(result)} clusters formed")
+    return result
+
+
+
+
+
 def k_lcs(sequences: list[bytes], *, logger: logging.Logger, workers: int) -> bytes:
     """
     Reduces [k] byte sequences to a single common subsequence using a 
@@ -282,13 +337,12 @@ def yara_format_lcs(lcs: bytes, sequences: list[bytes], *, bytes_per_line: int =
 
 
 
-def build_yara_rule_text(family: str, lcs: bytes, sequences: list[bytes], time_to_build: float) -> str:
+def build_yara_rule_text(family: str,yara_strings: list[str], time_to_build: float) -> str:
     """Constructs YARA rule string corresponding to the malware family signature."""
-    lcs_yara_hex_string = yara_format_lcs(lcs, sequences, bytes_per_line=24)
     
     #one $si per yara string from yara_format_lcs
     strings_block = ""
-    for i, s in enumerate(lcs_yara_hex_string):
+    for i, s in enumerate(yara_strings):
         strings_block += f"        $s{i}= {s}\n"
     
     reported_time_to_build = f"{round(time_to_build, 2)} sec" if time_to_build < 60.0 else f"{round(time_to_build/60.0, 2)} min"
@@ -296,8 +350,6 @@ def build_yara_rule_text(family: str, lcs: bytes, sequences: list[bytes], time_t
 {{
     meta:
         family = "{family}"
-        nb_samples = {len(sequences)}
-        lcs_length = {len(lcs)}
         time_to_build = "{reported_time_to_build}"
     strings:
         {strings_block}
@@ -331,15 +383,18 @@ def main():
     try:
         start_time = monotonic()
         sequences = collect_samples(family_dirpath, args.truncate_bytes, logger)
-        lcs = k_lcs(sequences, logger=logger, workers=args.workers)
-        time_to_build = monotonic() - start_time
+        clusters = cluster_samples(sequences, logger)
         
-        logger.info(f"LCS length: {len(lcs)} (computed in {time_to_build:.2f}s)")
-        if len(lcs) == 0:
-            logger.error("Empty LCS — no common subsequence found. Not writing a YARA rule.")
-            raise SystemExit(1)
+        all_yara_strings = []
+        for cluster in clusters:
+            cluster_sequences=[sequences[i] for i in cluster]
+            lcs = k_lcs(cluster_sequences, logger=logger, workers=args.workers)
+            yara_strings = yara_format_lcs(lcs, cluster_sequences)
+            all_yara_strings.extend(yara_strings)
 
-        rule_text = build_yara_rule_text(family, lcs, sequences, time_to_build)
+        time_to_build = monotonic() - start_time
+        rule_text = build_yara_rule_text(family, all_yara_strings, time_to_build)
+
         family_signatures_dirpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signatures", family)
         os.makedirs(family_signatures_dirpath, exist_ok=True)
         output_filepath = os.path.join(family_signatures_dirpath, f"{family}.yar")
