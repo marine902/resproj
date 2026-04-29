@@ -343,7 +343,7 @@ def build_yara_rule_text(family: str,yara_strings: list[str], time_to_build: flo
     #one $si per yara string from yara_format_lcs
     strings_block = ""
     for i, s in enumerate(yara_strings):
-        strings_block += f"        $s{i}= {s}\n"
+        strings_block += f"        $s{i} = {s}\n"
     
     reported_time_to_build = f"{round(time_to_build, 2)} sec" if time_to_build < 60.0 else f"{round(time_to_build/60.0, 2)} min"
     return f"""rule {family}
@@ -352,7 +352,7 @@ def build_yara_rule_text(family: str,yara_strings: list[str], time_to_build: flo
         family = "{family}"
         time_to_build = "{reported_time_to_build}"
     strings:
-        {strings_block}
+{strings_block}
     condition:
         any of them
 }}"""
