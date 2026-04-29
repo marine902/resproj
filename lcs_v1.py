@@ -365,6 +365,7 @@ def main():
     ap.add_argument("--truncate-bytes", type=int, default=TRUNCATE_BYTES_DEFAULT, help=f"Read up to N bytes per file (default: {TRUNCATE_BYTES_DEFAULT})")
     ap.add_argument("-v", "--verbose", action="count", default=0, help="-v: INFO, -vv: DEBUG")
     ap.add_argument("--workers", type=int, default=0, help="Number of processes to parallelize distance computation (default: 0)")
+    ap.add_argument("--batch-size", type=int, default=None, help="Number of files to use for training (default: all)")
     args = ap.parse_args()
 
     level = logging.WARNING if args.verbose == 0 else (logging.INFO if args.verbose == 1 else logging.DEBUG)
@@ -383,7 +384,12 @@ def main():
     try:
         start_time = monotonic()
         sequences = collect_samples(family_dirpath, args.truncate_bytes, logger)
-        clusters = cluster_samples(sequences, logger)
+        
+        if args.batch_size:
+            sequences = sequences[:args.batch_size]
+            logger.info(f"Using first {len(sequences)} files (batch-size={args.batch_size})")
+
+    clusters = cluster_samples(sequences, logger)
         
         all_yara_strings = []
         for cluster in clusters:
