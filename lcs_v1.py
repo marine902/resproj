@@ -270,6 +270,30 @@ def k_lcs(sequences: list[bytes], *, logger: logging.Logger, workers: int) -> by
 
 
 
+def is_valid_block(tokens: list[str]) -> bool:
+    '''
+    filter for lots a of null bytes, header PE, block too small
+    '''
+    hex_tokens=[t for t in tokens if not t.startswith("[")]
+    #filter too small block
+    if len(hex_tokens)<8:
+        return False
+    
+    #filter too many null bytes
+    null_count=sum(1 for t in hex_tokens if t == "00")
+    if null_count/len(hex_tokens)>0.4:
+        return False
+    
+    #filter PE header
+    if len(hex_tokens)>=2 and hex_tokens[0]=="4d" and hex_tokens[1]=="5a": #"MZ"
+        return False
+    return True
+
+
+
+
+
+
 def yara_format_lcs(lcs: bytes, sequences: list[bytes], *, bytes_per_line: int = 24) -> list[str]:
     """
     Formats raw bytes into a YARA hex string.
@@ -319,7 +343,8 @@ def yara_format_lcs(lcs: bytes, sequences: list[bytes], *, bytes_per_line: int =
             gap_max=max(gaps)
             if gap_max>50:
                 #gap too large, so cut and start new yara string to avoid too many wildcards
-                yara_strings.append(tokens)
+                if is_valid_block(tokens):
+                    yara_strings.append(tokens)
                 tokens=[f"{lcs[i+1]:02x}"]#start new block with the next byte of the LCS
             else:
                 #we insert [min-max]
@@ -329,7 +354,8 @@ def yara_format_lcs(lcs: bytes, sequences: list[bytes], *, bytes_per_line: int =
         else:
             #no gap
             tokens.append(f"{lcs[i+1]:02x}")
-    yara_strings.append(tokens)
+    if is_valid_block(tokens):
+        yara_strings.append(tokens)
 
     #convert each list of tockens to yara hex string format
     return ["{ " + " ".join(t) + " }" for t in yara_strings]
