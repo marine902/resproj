@@ -317,6 +317,11 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
         tockens=s.strip("{} ").split()
         bytes_only=[t for t in tockens if not t.startswith("[")]
 
+        #filter for PE header(MZ)
+        if len(bytes_only) >= 2 and bytes_only[0] == '4d' and bytes_only[1] == '5a':
+            continue
+
+
         if not bytes_only:
             continue
         #filter if too many null bytes
