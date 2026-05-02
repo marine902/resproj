@@ -299,11 +299,189 @@ def clean_block(tokens: list[str]) -> list[str] | None:
     #filter PE header
     if len(hex_tokens)>=2 and hex_tokens[0]=="4d" and hex_tokens[1]=="5a": #"MZ"
         #cut tokens
-        for idx, t in enumerate(tokens):
-            if t == "5a":
-                tokens = tokens[idx+1:]
+        for i, t in enumerate(tokens):
+            if t=="5a":
+                tokens = tokens[i+1:]
                 break
     return tokens
+
+
+
+#parameters
+local_window_size=2048
+local_window_step=1024
+local_min_match_ratio=0.6
+min_block_size=16
+max_gap_size=50
+max_block_bytes=500
+max_strings_per_cluster=20
+
+
+
+def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_block_bytes) -> list[str]:
+
+    if len(a)>len(b):
+        a,b=b,a 
+    
+    result=edlib.align(a, b, mode="NW", task="path")
+    cigar=result["cigar"]
+    if cigar is None:
+        return []
+    
+    operations=[]
+    run =0
+
+    for ch in cigar:
+        if ch.isdigit():
+            run=run * 10 + (ord(ch) - 48)
+        
+        else:
+            if run== 0:
+                run=1
+            operations.append((ch, run))
+            run=0
+    strings=[]
+    current_string=[]
+    current_len=0
+    in_gap=False
+    gap_min=0
+    gap_max=0
+    i=0
+
+
+    def flush_gap():
+        nonlocal in_gap, gap_min, gap_max
+        if in_gap:
+            current_string.append("["+str(gap_min)+"-"+str(gap_max)+"]")
+            in_gap=False
+            gap_min=0
+            gap_max=0
+
+
+    def flush_block():
+        nonlocal current_string, current_len, in_gap, gap_min, gap_max
+        if in_gap:
+            in_gap=False
+            gap_min=0
+            gap_max=0
+        if current_len>=min_block_size:
+            tokens=current_string[:]
+            while tokens and tokens[0][0]=="[":
+                tokens.pop(0)
+            while tokens and tokens[-1][0]=="[":
+                tokens.pop()
+            byte_count=sum(1 for t in tokens if t[0] != "[")
+            if byte_count>=min_block_size:
+                strings.append("{ " + " ".join(tokens) + " }")
+        current_string.clear()
+        current_len=0
+
+
+
+    for operation,count in operations:
+        if i>=len(a):
+            break
+        if operation=="=":
+            flush_gap()
+            safe=min(count, len(a)-i)
+            remaining_bytes=safe
+            position=i
+            while remaining_bytes>0:
+                space=max_block_bytes-current_len
+                chunk=min(space, remaining_bytes)
+                for k in range(chunk):
+                    current_string.append(f"{a[position+k]:02x}")
+                current_len+=chunk
+                position+=chunk
+                remaining_bytes-=chunk
+                if current_len>=max_block_bytes:
+                    flush_block()
+            i+=safe
+        elif operation=="X":
+            safe=min(count, len(a)-i)
+            if safe>max_gap_size:
+                flush_block()
+            else:
+                if not in_gap:
+                    in_gap=True
+                    gap_min=safe
+                    gap_max=safe
+                else:
+                    gap_min+=safe
+                    gap_max+=safe
+            i+=safe
+
+        elif operation=="D":
+            safe=min(count, len(a)-i)
+            if safe>max_gap_size:
+                flush_block()
+            else:
+                if not in_gap:
+                    in_gap=True
+                    gap_min=0
+                    gap_max=safe
+                else:
+                    gap_max+=safe
+            i+=safe
+        elif operation=="I":
+            if count>max_gap_size:
+                flush_block()
+            else:
+                if not in_gap:
+                    in_gap=True
+                    gap_min=0
+                    gap_max=count
+                else:
+                    gap_max+=count
+    flush_block()
+    return strings
+
+
+
+def local_align_and_build_yara_strings(a: bytes, b: bytes, window_size: int = local_window_size, window_step: int = local_window_step, min_match_ratio: float = local_min_match_ratio) -> list[str]:
+    strings=[]
+    seen_offsets=set()
+
+    for start in range(0, len(a)-window_size+1, window_step):
+        window=a[start:start+window_size]
+        try:
+            result=edlib.align(window, b, mode="HW", task="path")
+        except Exception:
+            continue
+
+        if result["editDistance"] <0:
+            continue
+
+
+        #estimate match ratio
+        match_ratio=1.0 - result["editDistance"]/window_size
+        if match_ratio<min_match_ratio:
+            continue
+
+        #find where the best match lands in b
+        localisations=result.get("locations")
+        if not localisations:
+            continue
+        b_start, b_end=localisations[0]
+
+        #we skip if we already processed a window at this location in b
+        if b_start in seen_offsets:
+            continue
+        seen_offsets.add(b_start)
+
+        #we extract the matched region from b and build yara strings
+        b_region=b[b_start:b_end+1]
+        new_strings=align_and_build_yara_strings(window, b_region)
+        strings.extend(new_strings)
+
+        if len(strings)>=max_strings_per_cluster:
+            break
+
+    return strings
+
+
+    
+
 
 
 
@@ -412,6 +590,7 @@ def main():
     ap.add_argument("-v", "--verbose", action="count", default=0, help="-v: INFO, -vv: DEBUG")
     ap.add_argument("--workers", type=int, default=0, help="Number of processes to parallelize distance computation (default: 0)")
     ap.add_argument("--batch-size", type=int, default=None, help="Number of files to use for training (default: all)")
+    ap.add_argument("--local", action="store_true", default=False,help="Use local alignment (sliding window HW mode) instead of global NW")
     args = ap.parse_args()
 
     level = logging.WARNING if args.verbose == 0 else (logging.INFO if args.verbose == 1 else logging.DEBUG)
@@ -438,10 +617,18 @@ def main():
         clusters = cluster_samples(sequences, logger)
         
         all_yara_strings = []
+        
         for cluster in clusters:
-            cluster_sequences=[sequences[i] for i in cluster]
-            lcs = k_lcs(cluster_sequences, logger=logger, workers=args.workers)
-            yara_strings = yara_format_lcs(lcs, cluster_sequences)
+            cluster_sequences = [sequences[i] for i in cluster]
+            if args.local:
+            # local mode: align first two sequences directly, no k_lcs needed
+                if len(cluster_sequences) >= 2:
+                    yara_strings = local_align_and_build_yara_strings(cluster_sequences[0], cluster_sequences[1])
+                else:
+                    yara_strings = []
+            else:
+                lcs = k_lcs(cluster_sequences, logger=logger, workers=args.workers)
+                yara_strings = yara_format_lcs(lcs, cluster_sequences)
             all_yara_strings.extend(yara_strings)
 
         time_to_build = monotonic() - start_time
