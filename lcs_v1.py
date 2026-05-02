@@ -321,12 +321,12 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
             continue
         #filter if too many null bytes
         null_ratio=sum(1 for t in bytes_only if t == "00")/len(bytes_only)
-        if null_ratio>0.3:
+        if null_ratio>0.5:
             continue
 
         #filter if too many repeated bytes
         unique_ratio = len(set(bytes_only)) / len(bytes_only)
-        if unique_ratio < 0.25:
+        if unique_ratio < 0.10:
             continue
 
         #filter if sequential bytes
