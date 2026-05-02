@@ -153,7 +153,7 @@ def build_distance_heap(items: Dict[int, bytes], active_ids: set[int], pool=None
 #parameters clustering
 
 cluster_sample_bytes=10000 #take the first 10KB of each sample to compute the distance for clustering
-cluster_threshold=0.3 #seuil behind it 2 samples are considered similar to be in same cluster
+cluster_threshold=0.8 #seuil behind it 2 samples are considered similar to be in same cluster
 
 
 def cluster_samples(sequences: list[bytes], logger: logging.Logger):
