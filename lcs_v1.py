@@ -307,6 +307,46 @@ def clean_block(tokens: list[str]) -> list[str] | None:
 
 
 
+def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list[str]:
+    '''
+    filter yara strings that are too generic to be usefu:
+    too many null bytes,too many repeated bytes,sequential lookup tables
+    '''
+    filtered=[]
+    for s in strings:
+        tockens=s.strip("{} ").split()
+        bytes_only=[t for t in tockens if not t.startswith("[")]
+
+        if not bytes_only:
+            continue
+        #filter if too many null bytes
+        null_ratio=sum(1 for t in bytes_only if t == "00")/len(bytes_only)
+        if null_ratio>0.3:
+            continue
+
+        #filter if too many repeated bytes
+        unique_ratio = len(set(bytes_only)) / len(bytes_only)
+        if unique_ratio < 0.25:
+            continue
+
+        #filter if sequential bytes
+        byte_vals = [int(t, 16) for t in bytes_only]
+        differences = [byte_vals[i+1] - byte_vals[i] for i in range(len(byte_vals)-1)]
+        if len(differences) > 20 and sum(1 for d in differences if d == 1) / len(differences) > 0.85:
+            continue
+
+        filtered.append(s)
+    return filtered
+
+
+
+
+
+
+
+
+
+
 #parameters
 local_window_size=2048
 local_window_step=1024
@@ -620,12 +660,15 @@ def main():
         
         for cluster in clusters:
             cluster_sequences = [sequences[i] for i in cluster]
+            
             if args.local:
-            # local mode: align first two sequences directly, no k_lcs needed
                 if len(cluster_sequences) >= 2:
                     yara_strings = local_align_and_build_yara_strings(cluster_sequences[0], cluster_sequences[1])
+                    yara_strings = filter_yara_strings(yara_strings)#filter generic strings
                 else:
                     yara_strings = []
+
+
             else:
                 lcs = k_lcs(cluster_sequences, logger=logger, workers=args.workers)
                 yara_strings = yara_format_lcs(lcs, cluster_sequences)
