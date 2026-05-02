@@ -356,7 +356,7 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
 #parameters
 local_window_size=2048
 local_window_step=1024
-local_min_match_ratio=0.6
+local_min_match_ratio=0.4
 min_block_size=16
 max_gap_size=50
 max_block_bytes=500
