@@ -660,8 +660,14 @@ def main():
             sequences = sequences[:args.batch_size]
             logger.info(f"Using first {len(sequences)} files (batch-size={args.batch_size})")
 
-        clusters = cluster_samples(sequences, logger)
-        
+        if args.local:
+            # in local mode, skip clustering — treat all sequences as one cluster
+            clusters = [list(range(len(sequences)))]
+            logger.info("Local mode: single cluster with all sequences")
+        else:
+            clusters = cluster_samples(sequences, logger)
+
+
         all_yara_strings = []
         
         for cluster in clusters:
