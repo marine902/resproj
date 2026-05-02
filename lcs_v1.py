@@ -16,6 +16,7 @@ from bisect import bisect_right
 from multiprocessing import Pool
 import signal
 import sys
+import statistics 
 
 TRUNCATE_BYTES_DEFAULT = 1000000 
 
@@ -667,16 +668,22 @@ def main():
             cluster_sequences = [sequences[i] for i in cluster]
             
             if args.local:
-                if len(cluster_sequences) >= 2:
-                    yara_strings = local_align_and_build_yara_strings(cluster_sequences[0], cluster_sequences[1])
-                    yara_strings = filter_yara_strings(yara_strings)#filter generic strings
+                pairs = [] 
+                for i in range(len(cluster_sequences)): 
+                    for j in range(i+1, len(cluster_sequences)): 
+                        d = edlib.align( cluster_sequences[i][:cluster_sample_bytes], cluster_sequences[j][:cluster_sample_bytes], mode="NW", task="distance" )["editDistance"] 
+                        pairs.append((d,i,j))
+
+                if len(pairs)==0:
+                    yara_strings=[]
                 else:
-                    yara_strings = []
-
-
-            else:
-                lcs = k_lcs(cluster_sequences, logger=logger, workers=args.workers)
-                yara_strings = yara_format_lcs(lcs, cluster_sequences)
+                        
+                    medianne=statistics.median(d for d,_,_ in pairs)
+                    best_pairs=min(pairs, key=lambda x: abs(x[0]-medianne))
+                    _,i_medianne,j_medianne=best_pairs
+                    yara_strings = local_align_and_build_yara_strings(cluster_sequences[i_medianne], cluster_sequences[j_medianne])
+                    yara_strings = filter_yara_strings(yara_strings)
+            
             all_yara_strings.extend(yara_strings)
 
         time_to_build = monotonic() - start_time
