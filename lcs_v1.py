@@ -632,14 +632,20 @@ def main():
             all_yara_strings.extend(yara_strings)
 
         time_to_build = monotonic() - start_time
-        rule_text = build_yara_rule_text(family, all_yara_strings, time_to_build)
 
-        family_signatures_dirpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signatures", family)
-        os.makedirs(family_signatures_dirpath, exist_ok=True)
-        output_filepath = os.path.join(family_signatures_dirpath, f"{family}.yar")
-        with open(output_filepath, 'w') as file:
-            file.write(rule_text)
-        print(f"Wrote signature to {output_filepath}")
+        if not all_yara_strings:
+            logger.warning(f"No YARA strings generated for {family} — skipping")
+            print(f"No signature for {family}")
+        else:
+            rule_text = build_yara_rule_text(family, all_yara_strings, time_to_build)
+            family_signatures_dirpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signatures", family)
+            os.makedirs(family_signatures_dirpath, exist_ok=True)
+            output_filepath = os.path.join(family_signatures_dirpath, f"{family}.yar")
+            with open(output_filepath, 'w') as file:
+                file.write(rule_text)
+            print(f"Wrote signature to {output_filepath}")
+
+
     except KeyboardInterrupt:
         logger.error("Execution interrupted by user (Ctrl+C). Shutting down...")
         sys.exit(1)
