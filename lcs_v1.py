@@ -176,16 +176,22 @@ def cluster_samples(sequences: list[bytes], logger: logging.Logger):
         parent[find(x)]=find(y)
 
 
+    all_distances={}
     for i in range(n):
         for j in range(i+1,n):
             #compute distance for pair on short prefix
-            result=edlib.align(short[i],short[j], mode="NW", task="distance")
-            d=result["editDistance"]
-            norm=d/max(len(short[i]),len(short[j]))#normalize distance (between 0 and1)
-
-            if norm<cluster_threshold:
-                union(i,j)#if similar (behind threshold), same cluster
+            d=edlib.align(short[i],short[j], mode="NW", task="distance")["editDistance"]
+            all_distances[(i, j)] = d
     
+
+    max_distance=max(all_distances.values()) if all_distances else 0
+    threshold_distance=cluster_threshold*max_distance
+
+    for (i, j), d in all_distances.items():
+        if d<=threshold_distance:
+            union(i,j)
+
+
     #regroup samples by cluster
     clusters={}
     for i in range(n):
@@ -660,12 +666,7 @@ def main():
             sequences = sequences[:args.batch_size]
             logger.info(f"Using first {len(sequences)} files (batch-size={args.batch_size})")
 
-        if args.local:
-            # in local mode, skip clustering — treat all sequences as one cluster
-            clusters = [list(range(len(sequences)))]
-            logger.info("Local mode: single cluster with all sequences")
-        else:
-            clusters = cluster_samples(sequences, logger)
+        clusters = cluster_samples(sequences, logger)
 
 
         all_yara_strings = []
