@@ -583,18 +583,18 @@ def yara_format_lcs(lcs: bytes, sequences: list[bytes], *, bytes_per_line: int =
         contiguous_in_all = all(p[i+1] == p[i] + 1 for p in positions) # checks whether the given pair of LCS bytes is present in all sequences in a contiguous manner
         
         if not contiguous_in_all:
-            #compute the gap size across all samples
-            gaps = [p[i+1] - p[i] for p in positions]
+            #compute the gap size in each samples (training)
+            gaps = [p[i+1]- p[i] for p in positions]
             gap_min=min(gaps)
             gap_max=max(gaps)
             if gap_max>50:
-                #gap too large, so cut and start new yara string to avoid too many wildcards
-                cleaned = clean_block(tokens)
-                if cleaned is not None:
-                    yara_strings.append(cleaned)
-                tokens=[f"{lcs[i+1]:02x}"]#start new block with the next byte of the lcs
+                #if gap too large, we cut and start new yara string to avoid too many wildcards
+                clean = clean_block(tokens)
+                if clean is not None:
+                    yara_strings.append(clean)
+                tokens=[f"{lcs[i+1]:02x}"]#we start new block with the next byte of the lcs
             else:
-                #we insert [min-max]
+                #we insert [min-max] for more fast matching
                 tokens.append("["+str(gap_min)+"-"+str(gap_max)+"]")
                 tokens.append(f"{lcs[i+1]:02x}")
 
@@ -603,9 +603,9 @@ def yara_format_lcs(lcs: bytes, sequences: list[bytes], *, bytes_per_line: int =
             tokens.append(f"{lcs[i+1]:02x}")
     
     
-    cleaned = clean_block(tokens)
-    if cleaned is not None:
-        yara_strings.append(cleaned)
+    clean = clean_block(tokens)
+    if clean is not None:
+        yara_strings.append(clean)
 
     #convert each list of tockens to yara hex string format
     return ["{ " + " ".join(t) + " }" for t in yara_strings]
