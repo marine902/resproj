@@ -152,8 +152,8 @@ def build_distance_heap(items: Dict[int, bytes], active_ids: set[int], pool=None
 
 #parameters clustering
 
-cluster_sample_bytes=10000 #take the first 10KB of each sample to compute the distance for clustering
-cluster_threshold=0.8 #seuil behind it 2 samples are considered similar to be in same cluster
+cluster_sample_bytes=10000 #take only the first 10KB of each sample to compute the distance for clustering to make distance computation more fast
+cluster_threshold=0.8 #seuil behind it 2 samples are merged in the same cluster if their distance is whithin
 
 
 def cluster_samples(sequences: list[bytes], logger: logging.Logger):
@@ -161,35 +161,43 @@ def cluster_samples(sequences: list[bytes], logger: logging.Logger):
     regroup the sequences in cluster via union find
     '''
     n=len(sequences)
-    short= [s[:cluster_sample_bytes] for s in sequences]#take short prefix for fast distance computation 
+    prefix= [s[:cluster_sample_bytes] for s in sequences]#take short prefix of each sample for fast distance computation 
+    
+    #each sample starts in its own cluster (own parent)
     parent=[]
     for i in range(n):
         parent.append(i)
 
     def find(x):
         while parent[x]!=x:
-            parent[x]=parent[parent[x]]
+            parent[x]=parent[parent[x]]#skip one level
             x=parent[x]
         return x
     
     def union(x,y):
-        parent[find(x)]=find(y)
+        
+        a=find(x)
+        b=find(y)
+        if a!=b:#merge clusters of x and y if they are different
+            parent[a]=b
 
 
     all_distances={}
     for i in range(n):
         for j in range(i+1,n):
             #compute distance for pair on short prefix
-            d=edlib.align(short[i],short[j], mode="NW", task="distance")["editDistance"]
+            d=edlib.align(prefix[i],prefix[j], mode="NW", task="distance")["editDistance"]
             all_distances[(i, j)] = d
     
-
-    max_distance=max(all_distances.values()) if all_distances else 0
+    if all_distances:
+        max_distance=max(all_distances.values()) 
+    else:
+        max_distance=0
     threshold_distance=cluster_threshold*max_distance
 
     for (i, j), d in all_distances.items():
         if d<=threshold_distance:
-            union(i,j)
+            union(i,j) #if similar close, merge the clusters of the 2 samples
 
 
     #regroup samples by cluster
