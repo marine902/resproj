@@ -285,34 +285,55 @@ def k_lcs(sequences: list[bytes], *, logger: logging.Logger, workers: int) -> by
 
 
 
+#parameters for yara string 
+min_block_bytes=8
+min_unique_ratio=0.25
+min_sequence_length=20
+max_sequence_ratio=0.85
+max_null_ratio=0.4
+
 def clean_block(tokens: list[str]) -> list[str] | None:    
     '''
-    filter for lots a of null bytes, header PE, block too small
+    filter for null bytes, header PE, block too small before returning the block as a yara string
+    return None if block is too generic and return the cleaned block otherwise
     '''
     hex_tokens=[t for t in tokens if not t.startswith("[")]
-    #filter too small block
-    if len(hex_tokens)<8:
+    #filter if too small block to be useful
+    if len(hex_tokens)<min_block_bytes:
         return None
     
     #filter if too many repeated bytes 
-    unique_ratio = len(set(hex_tokens)) / len(hex_tokens)
-    if unique_ratio < 0.25:
+    unique_bytes=set()
+    for t in hex_tokens:
+        unique_bytes.add(t)
+    unique_ratio = len(unique_bytes) / len(hex_tokens)
+    if unique_ratio < min_unique_ratio:
         return None
 
     #filter if too many consecutive bytes
-    byte_vals = [int(t, 16) for t in hex_tokens]
-    diffs = [byte_vals[i+1] - byte_vals[i] for i in range(len(byte_vals)-1)]
-    if len(diffs) > 20 and sum(1 for d in diffs if d == 1) / len(diffs) > 0.85:
+    byte_vals = []
+    for t in hex_tokens:
+        byte_vals.append(int(t, 16))
+    
+    seq_count=0
+    for i in range(len(byte_vals)-1):
+        if byte_vals[i+1]-byte_vals[i]== 1:
+            seq_count+=1
+    if len(byte_vals)>min_sequence_length and seq_count/(len(byte_vals)-1)>max_sequence_ratio:
         return None
 
 
-    #filter too many null bytes
-    null_count=sum(1 for t in hex_tokens if t == "00")
-    if null_count/len(hex_tokens)>0.4:
+    #filter if too many null bytes
+    null_count=0
+    for t in hex_tokens:
+        if t == "00":
+            null_count += 1
+    null_ratio=null_count/len(hex_tokens)
+    if null_ratio>max_null_ratio:
         return None
     
-    #filter PE header
-    if len(hex_tokens)>=2 and hex_tokens[0]=="4d" and hex_tokens[1]=="5a": #"MZ"
+    #filter for PE header
+    if len(hex_tokens)>=2 and hex_tokens[0]=="4d" and hex_tokens[1]=="5a": #PE header"MZ"
         #cut tokens
         for i, t in enumerate(tokens):
             if t=="5a":
@@ -323,39 +344,17 @@ def clean_block(tokens: list[str]) -> list[str] | None:
 
 
 def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list[str]:
-    '''
-    filter yara strings that are too generic to be usefu:
-    too many null bytes,too many repeated bytes,sequential lookup tables
-    '''
+    
     filtered=[]
     for s in strings:
-        tockens=s.strip("{} ").split()
-        bytes_only=[t for t in tockens if not t.startswith("[")]
 
-        #filter for PE header(MZ)
-        if len(bytes_only) >= 2 and bytes_only[0] == '4d' and bytes_only[1] == '5a':
-            continue
+        #parse the yara string back into a token list
+        tokens=s.strip("{} ").split()
 
-
-        if not bytes_only:
-            continue
-        #filter if too many null bytes
-        null_ratio=sum(1 for t in bytes_only if t == "00")/len(bytes_only)
-        if null_ratio>0.5:
-            continue
-
-        #filter if too many repeated bytes
-        unique_ratio = len(set(bytes_only)) / len(bytes_only)
-        if unique_ratio < 0.10:
-            continue
-
-        #filter if sequential bytes
-        byte_vals = [int(t, 16) for t in bytes_only]
-        differences = [byte_vals[i+1] - byte_vals[i] for i in range(len(byte_vals)-1)]
-        if len(differences) > 20 and sum(1 for d in differences if d == 1) / len(differences) > 0.85:
-            continue
-
-        filtered.append(s)
+        #reuse clean_block to apply the filters on the yara string
+        clean=clean_block(tokens)
+        if clean is not None:
+            filtered.append(s)
     return filtered
 
 
@@ -643,6 +642,37 @@ def build_yara_rule_text(family: str,yara_strings: list[str], time_to_build: flo
 
 
 
+def select_median_pair(cluster_sequences: list[bytes]) -> tuple[int, int] | None:
+    pairs = [] 
+    for i in range(len(cluster_sequences)):
+        for j in range(i+1, len(cluster_sequences)): 
+            d = edlib.align( cluster_sequences[i][:cluster_sample_bytes], cluster_sequences[j][:cluster_sample_bytes], mode="NW", task="distance" )["editDistance"] 
+            pairs.append((d,i,j))
+
+    if len(pairs)==0:
+        yara_strings=[]
+
+
+    #find the medianne distance 
+    distances=[] 
+    for d, i, j in pairs:
+        distances.append(d)
+    medianne_distance=statistics.median(distances)
+    
+    #find the pair closest to the medianne distance 
+    best_pair=None
+    best_diff=float("inf")
+    for d, i, j in pairs:
+        diff=abs(d-medianne_distance)
+        if diff<best_diff:
+            best_diff=diff
+            best_pair=(i,j)
+    
+    return best_pair
+
+
+
+
 def main():
     ap = argparse.ArgumentParser(description="Malware family YARA signature generator, from k representative samples, based on the LCS (Longest Common Subsequence) algorithm")
     ap.add_argument("family_dirpath", type=str, help="Directory containing the family's representative binaries to build the signature from.")
@@ -683,23 +713,14 @@ def main():
             cluster_sequences = [sequences[i] for i in cluster]
             
             if args.local:
-                pairs = [] 
-                for i in range(len(cluster_sequences)): 
-                    for j in range(i+1, len(cluster_sequences)): 
-                        d = edlib.align( cluster_sequences[i][:cluster_sample_bytes], cluster_sequences[j][:cluster_sample_bytes], mode="NW", task="distance" )["editDistance"] 
-                        pairs.append((d,i,j))
-
-                if len(pairs)==0:
+                pair=select_median_pair(cluster_sequences)
+                if pair is None:
                     yara_strings=[]
                 else:
-                        
-                    medianne=statistics.median(d for d,_,_ in pairs)
-                    best_pairs=min(pairs, key=lambda x: abs(x[0]-medianne))
-                    _,i_medianne,j_medianne=best_pairs
-                    yara_strings = local_align_and_build_yara_strings(cluster_sequences[i_medianne], cluster_sequences[j_medianne])
-                    yara_strings = filter_yara_strings(yara_strings)
-            
-            all_yara_strings.extend(yara_strings)
+                    i_med, j_med = pair
+                    yara_strings=local_align_and_build_yara_strings(cluster_sequences[i_med], cluster_sequences[j_med])
+                    yara_strings=filter_yara_strings(yara_strings)
+                    
 
         time_to_build = monotonic() - start_time
 
