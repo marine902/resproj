@@ -297,7 +297,7 @@ def clean_block(tokens: list[str]) -> list[str] | None:
     filter for null bytes, header PE, block too small before returning the block as a yara string
     return None if block is too generic and return the cleaned block otherwise
     '''
-    hex_tokens=[t for t in tokens if not t.startswith("[")]
+    hex_tokens=[t for t in tokens if not tokens[0][0]=="["]
     #filter if too small block to be useful
     if len(hex_tokens)<min_block_bytes:
         return None
@@ -367,9 +367,6 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
 
 
 #parameters
-local_window_size=1024
-local_window_step=512
-local_min_match_ratio=0.4
 min_block_size=16
 max_gap_size=50
 max_block_bytes=500
@@ -379,6 +376,7 @@ max_strings_per_cluster=20
 
 def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_block_bytes) -> list[str]:
 
+    #align shorter sequence to longer sequence (less gaps)
     if len(a)>len(b):
         a,b=b,a 
     
@@ -387,6 +385,7 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
     if cigar is None:
         return []
     
+    #parse cigar into list of (operation,count)
     operations=[]
     run =0
 
@@ -399,16 +398,20 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
                 run=1
             operations.append((ch, run))
             run=0
+
+    
+    #tell the state for building yara strings
     strings=[]
     current_string=[]
     current_len=0
     in_gap=False
     gap_min=0
     gap_max=0
-    i=0
+    i=0 #the current position in a
 
 
     def flush_gap():
+        #write the accumulated gap as [min-max] and reset gap state
         nonlocal in_gap, gap_min, gap_max
         if in_gap:
             current_string.append("["+str(gap_min)+"-"+str(gap_max)+"]")
@@ -418,6 +421,7 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
 
 
     def flush_block():
+        #finish current block and add it to strings if large enough
         nonlocal current_string, current_len, in_gap, gap_min, gap_max
         if in_gap:
             in_gap=False
@@ -425,22 +429,28 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
             gap_max=0
         if current_len>=min_block_size:
             tokens=current_string[:]
+            #remove leading and ending spaces
             while tokens and tokens[0][0]=="[":
                 tokens.pop(0)
             while tokens and tokens[-1][0]=="[":
                 tokens.pop()
-            byte_count=sum(1 for t in tokens if t[0] != "[")
+            #count actual bytes (not the gap tokens)
+            byte_count=0
+            for t in tokens:
+                if t[0]!="[":
+                    byte_count+=1
             if byte_count>=min_block_size:
                 strings.append("{ " + " ".join(tokens) + " }")
         current_string.clear()
         current_len=0
 
 
-
+    #go through the operations and build yara tokens
     for operation,count in operations:
         if i>=len(a):
             break
         if operation=="=":
+            #we have a match so : write bytes to current block
             flush_gap()
             safe=min(count, len(a)-i)
             remaining_bytes=safe
@@ -457,6 +467,7 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
                     flush_block()
             i+=safe
         elif operation=="X":
+            #we have a mismatch so : same number of bytes on both sides, so: gap [n-n]
             safe=min(count, len(a)-i)
             if safe>max_gap_size:
                 flush_block()
@@ -466,58 +477,69 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
                     gap_min=safe
                     gap_max=safe
                 else:
+                    #we accumulate with previous gap operations
                     gap_min+=safe
                     gap_max+=safe
             i+=safe
 
         elif operation=="D":
+            #deletion: bytes in a not in b, so : gap [0-n]
             safe=min(count, len(a)-i)
             if safe>max_gap_size:
                 flush_block()
             else:
                 if not in_gap:
                     in_gap=True
-                    gap_min=0
+                    gap_min=0 #0 because bytes might be absent in b
                     gap_max=safe
                 else:
+                    #gap_min stays the same, just gap_max increases 
                     gap_max+=safe
             i+=safe
         elif operation=="I":
+            #insertion: bytes in b and not in a, so : gap [0-n]
             if count>max_gap_size:
                 flush_block()
             else:
                 if not in_gap:
                     in_gap=True
-                    gap_min=0
+                    gap_min=0 #0 because bytes might be absent in a
                     gap_max=count
                 else:
                     gap_max+=count
+            #i doesn't advance for insertions (no bytes consumed in a)
     flush_block()
     return strings
 
 
 
+#parameters
+local_window_size=1024
+local_window_step=512
+local_min_match_ratio=0.4
+
+
+
+
 def local_align_and_build_yara_strings(a: bytes, b: bytes, window_size: int = local_window_size, window_step: int = local_window_step, min_match_ratio: float = local_min_match_ratio) -> list[str]:
     strings=[]
-    seen_offsets=set()
+    seen_offsets=set() #to avoid generating 2 strings for the same region in b
 
     for start in range(0, len(a)-window_size+1, window_step):
         window=a[start:start+window_size]
-        try:
-            result=edlib.align(window, b, mode="HW", task="path")
-        except Exception:
-            continue
-
+        result=edlib.align(window, b, mode="HW", task="distance")
+        
+        #return -1 if alignement failed
         if result["editDistance"] <0:
             continue
 
 
-        #estimate match ratio
-        match_ratio=1.0 - result["editDistance"]/window_size
+        #check the window matches b well enough
+        match_ratio=1.0- result["editDistance"]/window_size
         if match_ratio<min_match_ratio:
             continue
 
-        #find where the best match lands in b
+        #find the location in b where the window match
         localisations=result.get("locations")
         if not localisations:
             continue
@@ -533,6 +555,7 @@ def local_align_and_build_yara_strings(a: bytes, b: bytes, window_size: int = lo
         new_strings=align_and_build_yara_strings(window, b_region)
         strings.extend(new_strings)
 
+        #stop if enough strings for this cluster
         if len(strings)>=max_strings_per_cluster:
             break
 
