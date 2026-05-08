@@ -741,7 +741,9 @@ def main():
                     yara_strings=[]
                 else:
                     i_med, j_med = pair
-                    yara_strings=local_align_and_build_yara_strings(cluster_sequences[i_med], cluster_sequences[j_med])
+                    a = cluster_sequences[i_med][:200_000]
+                    b = cluster_sequences[j_med][:200_000]
+                    yara_strings = local_align_and_build_yara_strings(a, b)
                     yara_strings=filter_yara_strings(yara_strings)
             
             else:
@@ -750,7 +752,9 @@ def main():
                     yara_strings=[]
                 else:
                     i_med, j_med = pair
-                    yara_strings=align_and_build_yara_strings(cluster_sequences[i_med], cluster_sequences[j_med])
+                    a = cluster_sequences[i_med][:200_000]
+                    b = cluster_sequences[j_med][:200_000]
+                    yara_strings = align_and_build_yara_strings(a, b)
                     yara_strings=filter_yara_strings(yara_strings)
             all_yara_strings.extend(yara_strings)
 
