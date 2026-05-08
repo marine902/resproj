@@ -297,7 +297,7 @@ def clean_block(tokens: list[str]) -> list[str] | None:
     filter for null bytes, header PE, block too small before returning the block as a yara string
     return None if block is too generic and return the cleaned block otherwise
     '''
-    hex_tokens=[t for t in tokens if not tokens[0][0]=="["]
+    hex_tokens = [t for t in tokens if not t.startswith("[")]
     #filter if too small block to be useful
     if len(hex_tokens)<min_block_bytes:
         return None
