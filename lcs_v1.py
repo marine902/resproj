@@ -517,7 +517,7 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
 local_window_size=1024
 local_window_step=512
 local_min_match_ratio=0.25
-
+local_skip_pe_header=1024
 
 
 
@@ -525,7 +525,7 @@ def local_align_and_build_yara_strings(a: bytes, b: bytes, window_size: int = lo
     strings=[]
     seen_offsets=set() #to avoid generating 2 strings for the same region in b
 
-    for start in range(0, len(a)-window_size+1, window_step):
+    for start in range(local_skip_pe_header, len(a)-window_size+1, window_step):
         window=a[start:start+window_size]
         result=edlib.align(window, b, mode="HW", task="distance")
         
