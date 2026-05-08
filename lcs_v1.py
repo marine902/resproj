@@ -669,11 +669,11 @@ def select_median_pair(cluster_sequences: list[bytes]) -> tuple[int, int] | None
     pairs = [] 
     for i in range(len(cluster_sequences)):
         for j in range(i+1, len(cluster_sequences)): 
-            d = edlib.align( cluster_sequences[i][:cluster_sample_bytes], cluster_sequences[j][:cluster_sample_bytes], mode="NW", task="distance" )["editDistance"] 
+            d = edlib.align(cluster_sequences[i][:cluster_sample_bytes], cluster_sequences[j][:cluster_sample_bytes], mode="NW", task="distance")["editDistance"] 
             pairs.append((d,i,j))
 
     if len(pairs)==0:
-        yara_strings=[]
+        return None
 
 
     #find the medianne distance 
