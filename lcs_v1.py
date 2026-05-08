@@ -743,7 +743,16 @@ def main():
                     i_med, j_med = pair
                     yara_strings=local_align_and_build_yara_strings(cluster_sequences[i_med], cluster_sequences[j_med])
                     yara_strings=filter_yara_strings(yara_strings)
-                    
+            
+            else:
+                pair=select_median_pair(cluster_sequences)
+                if pair is None:
+                    yara_strings=[]
+                else:
+                    i_med, j_med = pair
+                    yara_strings=align_and_build_yara_strings(cluster_sequences[i_med], cluster_sequences[j_med])
+                    yara_strings=filter_yara_strings(yara_strings)
+            all_yara_strings.extend(yara_strings)
 
         time_to_build = monotonic() - start_time
 
