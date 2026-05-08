@@ -152,8 +152,8 @@ def build_distance_heap(items: Dict[int, bytes], active_ids: set[int], pool=None
 
 #parameters clustering
 
-cluster_sample_bytes=10000 #take only the first 10KB of each sample to compute the distance for clustering to make distance computation more fast
-cluster_threshold=0.8 #seuil behind it 2 samples are merged in the same cluster if their distance is whithin
+cluster_sample_bytes=10000 #take the first 10KB of each sample to compute the distance for clustering
+cluster_threshold=0.8 #seuil behind it 2 samples are considered similar to be in same cluster
 
 
 def cluster_samples(sequences: list[bytes], logger: logging.Logger):
@@ -161,43 +161,35 @@ def cluster_samples(sequences: list[bytes], logger: logging.Logger):
     regroup the sequences in cluster via union find
     '''
     n=len(sequences)
-    prefix= [s[:cluster_sample_bytes] for s in sequences]#take short prefix of each sample for fast distance computation 
-    
-    #each sample starts in its own cluster (own parent)
+    short= [s[:cluster_sample_bytes] for s in sequences]#take short prefix for fast distance computation 
     parent=[]
     for i in range(n):
         parent.append(i)
 
     def find(x):
         while parent[x]!=x:
-            parent[x]=parent[parent[x]]#skip one level
+            parent[x]=parent[parent[x]]
             x=parent[x]
         return x
     
     def union(x,y):
-        
-        a=find(x)
-        b=find(y)
-        if a!=b:#merge clusters of x and y if they are different
-            parent[a]=b
+        parent[find(x)]=find(y)
 
 
     all_distances={}
     for i in range(n):
         for j in range(i+1,n):
             #compute distance for pair on short prefix
-            d=edlib.align(prefix[i],prefix[j], mode="NW", task="distance")["editDistance"]
+            d=edlib.align(short[i],short[j], mode="NW", task="distance")["editDistance"]
             all_distances[(i, j)] = d
     
-    if all_distances:
-        max_distance=max(all_distances.values()) 
-    else:
-        max_distance=0
+
+    max_distance=max(all_distances.values()) if all_distances else 0
     threshold_distance=cluster_threshold*max_distance
 
     for (i, j), d in all_distances.items():
         if d<=threshold_distance:
-            union(i,j) #if similar close, merge the clusters of the 2 samples
+            union(i,j)
 
 
     #regroup samples by cluster
@@ -285,55 +277,34 @@ def k_lcs(sequences: list[bytes], *, logger: logging.Logger, workers: int) -> by
 
 
 
-#parameters for yara string 
-min_block_bytes=8
-min_unique_ratio=0.25
-min_sequence_length=20
-max_sequence_ratio=0.85
-max_null_ratio=0.4
-
 def clean_block(tokens: list[str]) -> list[str] | None:    
     '''
-    filter for null bytes, header PE, block too small before returning the block as a yara string
-    return None if block is too generic and return the cleaned block otherwise
+    filter for lots a of null bytes, header PE, block too small
     '''
-    hex_tokens = [t for t in tokens if not t.startswith("[")]
-    #filter if too small block to be useful
-    if len(hex_tokens)<min_block_bytes:
+    hex_tokens=[t for t in tokens if not t.startswith("[")]
+    #filter too small block
+    if len(hex_tokens)<8:
         return None
     
     #filter if too many repeated bytes 
-    unique_bytes=set()
-    for t in hex_tokens:
-        unique_bytes.add(t)
-    unique_ratio = len(unique_bytes) / len(hex_tokens)
-    if unique_ratio < min_unique_ratio:
+    unique_ratio = len(set(hex_tokens)) / len(hex_tokens)
+    if unique_ratio < 0.25:
         return None
 
     #filter if too many consecutive bytes
-    byte_vals = []
-    for t in hex_tokens:
-        byte_vals.append(int(t, 16))
-    
-    seq_count=0
-    for i in range(len(byte_vals)-1):
-        if byte_vals[i+1]-byte_vals[i]== 1:
-            seq_count+=1
-    if len(byte_vals)>min_sequence_length and seq_count/(len(byte_vals)-1)>max_sequence_ratio:
+    byte_vals = [int(t, 16) for t in hex_tokens]
+    diffs = [byte_vals[i+1] - byte_vals[i] for i in range(len(byte_vals)-1)]
+    if len(diffs) > 20 and sum(1 for d in diffs if d == 1) / len(diffs) > 0.85:
         return None
 
 
-    #filter if too many null bytes
-    null_count=0
-    for t in hex_tokens:
-        if t == "00":
-            null_count += 1
-    null_ratio=null_count/len(hex_tokens)
-    if null_ratio>max_null_ratio:
+    #filter too many null bytes
+    null_count=sum(1 for t in hex_tokens if t == "00")
+    if null_count/len(hex_tokens)>0.4:
         return None
     
-    #filter for PE header
-    if len(hex_tokens)>=2 and hex_tokens[0]=="4d" and hex_tokens[1]=="5a": #PE header"MZ"
+    #filter PE header
+    if len(hex_tokens)>=2 and hex_tokens[0]=="4d" and hex_tokens[1]=="5a": #"MZ"
         #cut tokens
         for i, t in enumerate(tokens):
             if t=="5a":
@@ -344,17 +315,39 @@ def clean_block(tokens: list[str]) -> list[str] | None:
 
 
 def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list[str]:
-    
+    '''
+    filter yara strings that are too generic to be usefu:
+    too many null bytes,too many repeated bytes,sequential lookup tables
+    '''
     filtered=[]
     for s in strings:
+        tockens=s.strip("{} ").split()
+        bytes_only=[t for t in tockens if not t.startswith("[")]
 
-        #parse the yara string back into a token list
-        tokens=s.strip("{} ").split()
+        #filter for PE header(MZ)
+        if len(bytes_only) >= 2 and bytes_only[0] == '4d' and bytes_only[1] == '5a':
+            continue
 
-        #reuse clean_block to apply the filters on the yara string
-        clean=clean_block(tokens)
-        if clean is not None:
-            filtered.append(s)
+
+        if not bytes_only:
+            continue
+        #filter if too many null bytes
+        null_ratio=sum(1 for t in bytes_only if t == "00")/len(bytes_only)
+        if null_ratio>0.5:
+            continue
+
+        #filter if too many repeated bytes
+        unique_ratio = len(set(bytes_only)) / len(bytes_only)
+        if unique_ratio < 0.10:
+            continue
+
+        #filter if sequential bytes
+        byte_vals = [int(t, 16) for t in bytes_only]
+        differences = [byte_vals[i+1] - byte_vals[i] for i in range(len(byte_vals)-1)]
+        if len(differences) > 20 and sum(1 for d in differences if d == 1) / len(differences) > 0.85:
+            continue
+
+        filtered.append(s)
     return filtered
 
 
@@ -367,6 +360,9 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
 
 
 #parameters
+local_window_size=1024
+local_window_step=512
+local_min_match_ratio=0.4
 min_block_size=16
 max_gap_size=50
 max_block_bytes=500
@@ -376,7 +372,6 @@ max_strings_per_cluster=20
 
 def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_block_bytes) -> list[str]:
 
-    #align shorter sequence to longer sequence (less gaps)
     if len(a)>len(b):
         a,b=b,a 
     
@@ -385,7 +380,6 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
     if cigar is None:
         return []
     
-    #parse cigar into list of (operation,count)
     operations=[]
     run =0
 
@@ -398,20 +392,16 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
                 run=1
             operations.append((ch, run))
             run=0
-
-    
-    #tell the state for building yara strings
     strings=[]
     current_string=[]
     current_len=0
     in_gap=False
     gap_min=0
     gap_max=0
-    i=0 #the current position in a
+    i=0
 
 
     def flush_gap():
-        #write the accumulated gap as [min-max] and reset gap state
         nonlocal in_gap, gap_min, gap_max
         if in_gap:
             current_string.append("["+str(gap_min)+"-"+str(gap_max)+"]")
@@ -421,7 +411,6 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
 
 
     def flush_block():
-        #finish current block and add it to strings if large enough
         nonlocal current_string, current_len, in_gap, gap_min, gap_max
         if in_gap:
             in_gap=False
@@ -429,28 +418,22 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
             gap_max=0
         if current_len>=min_block_size:
             tokens=current_string[:]
-            #remove leading and ending spaces
             while tokens and tokens[0][0]=="[":
                 tokens.pop(0)
             while tokens and tokens[-1][0]=="[":
                 tokens.pop()
-            #count actual bytes (not the gap tokens)
-            byte_count=0
-            for t in tokens:
-                if t[0]!="[":
-                    byte_count+=1
+            byte_count=sum(1 for t in tokens if t[0] != "[")
             if byte_count>=min_block_size:
                 strings.append("{ " + " ".join(tokens) + " }")
         current_string.clear()
         current_len=0
 
 
-    #go through the operations and build yara tokens
+
     for operation,count in operations:
         if i>=len(a):
             break
         if operation=="=":
-            #we have a match so : write bytes to current block
             flush_gap()
             safe=min(count, len(a)-i)
             remaining_bytes=safe
@@ -467,7 +450,6 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
                     flush_block()
             i+=safe
         elif operation=="X":
-            #we have a mismatch so : same number of bytes on both sides, so: gap [n-n]
             safe=min(count, len(a)-i)
             if safe>max_gap_size:
                 flush_block()
@@ -477,69 +459,58 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
                     gap_min=safe
                     gap_max=safe
                 else:
-                    #we accumulate with previous gap operations
                     gap_min+=safe
                     gap_max+=safe
             i+=safe
 
         elif operation=="D":
-            #deletion: bytes in a not in b, so : gap [0-n]
             safe=min(count, len(a)-i)
             if safe>max_gap_size:
                 flush_block()
             else:
                 if not in_gap:
                     in_gap=True
-                    gap_min=0 #0 because bytes might be absent in b
+                    gap_min=0
                     gap_max=safe
                 else:
-                    #gap_min stays the same, just gap_max increases 
                     gap_max+=safe
             i+=safe
         elif operation=="I":
-            #insertion: bytes in b and not in a, so : gap [0-n]
             if count>max_gap_size:
                 flush_block()
             else:
                 if not in_gap:
                     in_gap=True
-                    gap_min=0 #0 because bytes might be absent in a
+                    gap_min=0
                     gap_max=count
                 else:
                     gap_max+=count
-            #i doesn't advance for insertions (no bytes consumed in a)
     flush_block()
     return strings
 
 
 
-#parameters
-local_window_size=1024
-local_window_step=512
-local_min_match_ratio=0.25
-
-
-
-
 def local_align_and_build_yara_strings(a: bytes, b: bytes, window_size: int = local_window_size, window_step: int = local_window_step, min_match_ratio: float = local_min_match_ratio) -> list[str]:
     strings=[]
-    seen_offsets=set() #to avoid generating 2 strings for the same region in b
+    seen_offsets=set()
 
     for start in range(0, len(a)-window_size+1, window_step):
         window=a[start:start+window_size]
-        result=edlib.align(window, b, mode="HW", task="distance")
-        
-        #return -1 if alignement failed
+        try:
+            result=edlib.align(window, b, mode="HW", task="path")
+        except Exception:
+            continue
+
         if result["editDistance"] <0:
             continue
 
 
-        #check the window matches b well enough
-        match_ratio=1.0- result["editDistance"]/window_size
+        #estimate match ratio
+        match_ratio=1.0 - result["editDistance"]/window_size
         if match_ratio<min_match_ratio:
             continue
 
-        #find the location in b where the window match
+        #find where the best match lands in b
         localisations=result.get("locations")
         if not localisations:
             continue
@@ -555,7 +526,6 @@ def local_align_and_build_yara_strings(a: bytes, b: bytes, window_size: int = lo
         new_strings=align_and_build_yara_strings(window, b_region)
         strings.extend(new_strings)
 
-        #stop if enough strings for this cluster
         if len(strings)>=max_strings_per_cluster:
             break
 
@@ -613,18 +583,18 @@ def yara_format_lcs(lcs: bytes, sequences: list[bytes], *, bytes_per_line: int =
         contiguous_in_all = all(p[i+1] == p[i] + 1 for p in positions) # checks whether the given pair of LCS bytes is present in all sequences in a contiguous manner
         
         if not contiguous_in_all:
-            #compute the gap size in each samples (training)
-            gaps = [p[i+1]- p[i] for p in positions]
+            #compute the gap size across all samples
+            gaps = [p[i+1] - p[i] for p in positions]
             gap_min=min(gaps)
             gap_max=max(gaps)
             if gap_max>50:
-                #if gap too large, we cut and start new yara string to avoid too many wildcards
-                clean = clean_block(tokens)
-                if clean is not None:
-                    yara_strings.append(clean)
-                tokens=[f"{lcs[i+1]:02x}"]#we start new block with the next byte of the lcs
+                #gap too large, so cut and start new yara string to avoid too many wildcards
+                cleaned = clean_block(tokens)
+                if cleaned is not None:
+                    yara_strings.append(cleaned)
+                tokens=[f"{lcs[i+1]:02x}"]#start new block with the next byte of the lcs
             else:
-                #we insert [min-max] for more fast matching
+                #we insert [min-max]
                 tokens.append("["+str(gap_min)+"-"+str(gap_max)+"]")
                 tokens.append(f"{lcs[i+1]:02x}")
 
@@ -633,9 +603,9 @@ def yara_format_lcs(lcs: bytes, sequences: list[bytes], *, bytes_per_line: int =
             tokens.append(f"{lcs[i+1]:02x}")
     
     
-    clean = clean_block(tokens)
-    if clean is not None:
-        yara_strings.append(clean)
+    cleaned = clean_block(tokens)
+    if cleaned is not None:
+        yara_strings.append(cleaned)
 
     #convert each list of tockens to yara hex string format
     return ["{ " + " ".join(t) + " }" for t in yara_strings]
@@ -662,37 +632,6 @@ def build_yara_rule_text(family: str,yara_strings: list[str], time_to_build: flo
     condition:
         any of them
 }}"""
-
-
-
-def select_median_pair(cluster_sequences: list[bytes]) -> tuple[int, int] | None:
-    pairs = [] 
-    for i in range(len(cluster_sequences)):
-        for j in range(i+1, len(cluster_sequences)): 
-            d = edlib.align(cluster_sequences[i][:cluster_sample_bytes], cluster_sequences[j][:cluster_sample_bytes], mode="NW", task="distance")["editDistance"] 
-            pairs.append((d,i,j))
-
-    if len(pairs)==0:
-        return None
-
-
-    #find the medianne distance 
-    distances=[] 
-    for d, i, j in pairs:
-        distances.append(d)
-    medianne_distance=statistics.median(distances)
-    
-    #find the pair closest to the medianne distance 
-    best_pair=None
-    best_diff=float("inf")
-    for d, i, j in pairs:
-        diff=abs(d-medianne_distance)
-        if diff<best_diff:
-            best_diff=diff
-            best_pair=(i,j)
-    
-    return best_pair
-
 
 
 
@@ -736,26 +675,22 @@ def main():
             cluster_sequences = [sequences[i] for i in cluster]
             
             if args.local:
-                pair=select_median_pair(cluster_sequences)
-                if pair is None:
+                pairs = [] 
+                for i in range(len(cluster_sequences)): 
+                    for j in range(i+1, len(cluster_sequences)): 
+                        d = edlib.align( cluster_sequences[i][:cluster_sample_bytes], cluster_sequences[j][:cluster_sample_bytes], mode="NW", task="distance" )["editDistance"] 
+                        pairs.append((d,i,j))
+
+                if len(pairs)==0:
                     yara_strings=[]
                 else:
-                    i_med, j_med = pair
-                    a = cluster_sequences[i_med][:200_000]
-                    b = cluster_sequences[j_med][:200_000]
-                    yara_strings = local_align_and_build_yara_strings(a, b)
-                    yara_strings=filter_yara_strings(yara_strings)
+                        
+                    medianne=statistics.median(d for d,_,_ in pairs)
+                    best_pairs=min(pairs, key=lambda x: abs(x[0]-medianne))
+                    _,i_medianne,j_medianne=best_pairs
+                    yara_strings = local_align_and_build_yara_strings(cluster_sequences[i_medianne], cluster_sequences[j_medianne])
+                    yara_strings = filter_yara_strings(yara_strings)
             
-            else:
-                pair=select_median_pair(cluster_sequences)
-                if pair is None:
-                    yara_strings=[]
-                else:
-                    i_med, j_med = pair
-                    a = cluster_sequences[i_med][:200_000]
-                    b = cluster_sequences[j_med][:200_000]
-                    yara_strings = align_and_build_yara_strings(a, b)
-                    yara_strings=filter_yara_strings(yara_strings)
             all_yara_strings.extend(yara_strings)
 
         time_to_build = monotonic() - start_time
