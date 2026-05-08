@@ -365,6 +365,13 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
         if unique_ratio < 0.10:
             continue
 
+        if bytes_only[:4] == ['00', '00', '00', '00']:
+            continue
+
+        gap_tokens = [t for t in tockens if t.startswith('[')]
+        if len(gap_tokens) > 3:
+            continue
+
         byte_vals = [int(t, 16) for t in bytes_only]
         differences = [byte_vals[i+1] - byte_vals[i] for i in range(len(byte_vals)-1)]
         if len(differences) > 20 and sum(1 for d in differences if d == 1) / len(differences) > 0.85:
