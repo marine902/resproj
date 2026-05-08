@@ -349,12 +349,28 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
     for s in strings:
 
         #parse the yara string back into a token list
-        tokens=s.strip("{} ").split()
+        tockens=s.strip("{} ").split()
+        bytes_only = [t for t in tockens if not t.startswith("[")]
+        if len(bytes_only) >= 2 and bytes_only[0] == '4d' and bytes_only[1] == '5a':
+            continue
+        
+        if not bytes_only:
+            continue
 
-        #reuse clean_block to apply the filters on the yara string
-        clean=clean_block(tokens)
-        if clean is not None:
-            filtered.append(s)
+        null_ratio = sum(1 for t in bytes_only if t == "00") / len(bytes_only)
+        if null_ratio > 0.5:
+            continue
+
+        unique_ratio = len(set(bytes_only)) / len(bytes_only)
+        if unique_ratio < 0.10:
+            continue
+
+        byte_vals = [int(t, 16) for t in bytes_only]
+        differences = [byte_vals[i+1] - byte_vals[i] for i in range(len(byte_vals)-1)]
+        if len(differences) > 20 and sum(1 for d in differences if d == 1) / len(differences) > 0.85:
+            continue
+
+        filtered.append(s)
     return filtered
 
 
@@ -516,8 +532,8 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
 #parameters
 local_window_size=1024
 local_window_step=512
-local_min_match_ratio=0.25
-local_skip_pe_header=1024
+local_min_match_ratio=0.4
+
 
 
 
@@ -525,9 +541,12 @@ def local_align_and_build_yara_strings(a: bytes, b: bytes, window_size: int = lo
     strings=[]
     seen_offsets=set() #to avoid generating 2 strings for the same region in b
 
-    for start in range(local_skip_pe_header, len(a)-window_size+1, window_step):
+    for start in range(0, len(a)-window_size+1, window_step):
         window=a[start:start+window_size]
-        result=edlib.align(window, b, mode="HW", task="distance")
+        try:
+            result = edlib.align(window, b, mode="HW", task="path")
+        except Exception:
+            continue
         
         #return -1 if alignement failed
         if result["editDistance"] <0:
@@ -665,36 +684,6 @@ def build_yara_rule_text(family: str,yara_strings: list[str], time_to_build: flo
 
 
 
-def select_median_pair(cluster_sequences: list[bytes]) -> tuple[int, int] | None:
-    pairs = [] 
-    for i in range(len(cluster_sequences)):
-        for j in range(i+1, len(cluster_sequences)): 
-            d = edlib.align(cluster_sequences[i][:cluster_sample_bytes], cluster_sequences[j][:cluster_sample_bytes], mode="NW", task="distance")["editDistance"] 
-            pairs.append((d,i,j))
-
-    if len(pairs)==0:
-        return None
-
-
-    #find the medianne distance 
-    distances=[] 
-    for d, i, j in pairs:
-        distances.append(d)
-    medianne_distance=statistics.median(distances)
-    
-    #find the pair closest to the medianne distance 
-    best_pair=None
-    best_diff=float("inf")
-    for d, i, j in pairs:
-        diff=abs(d-medianne_distance)
-        if diff<best_diff:
-            best_diff=diff
-            best_pair=(i,j)
-    
-    return best_pair
-
-
-
 
 def main():
     ap = argparse.ArgumentParser(description="Malware family YARA signature generator, from k representative samples, based on the LCS (Longest Common Subsequence) algorithm")
@@ -736,26 +725,21 @@ def main():
             cluster_sequences = [sequences[i] for i in cluster]
             
             if args.local:
-                pair=select_median_pair(cluster_sequences)
-                if pair is None:
+                pairs=[]
+                for i in range(len(cluster_sequences)):
+                    for j in range(i+1, len(cluster_sequences)):
+                        d = edlib.align(cluster_sequences[i][:cluster_sample_bytes], cluster_sequences[j][:cluster_sample_bytes], mode="NW", task="distance")["editDistance"] 
+                        pairs.append((d,i,j))
+
+                if len(pairs) == 0:
                     yara_strings=[]
                 else:
-                    i_med, j_med = pair
-                    a = cluster_sequences[i_med][:200_000]
-                    b = cluster_sequences[j_med][:200_000]
-                    yara_strings = local_align_and_build_yara_strings(a, b)
-                    yara_strings=filter_yara_strings(yara_strings)
+                    medianne=statistics.median([d for d, i, j in pairs])
+                    best_pair=min(pairs, key=lambda x: abs(x[0]-medianne))
+                    _,i_medianne,j_medianne = best_pair
+                    yara_strings = local_align_and_build_yara_strings(cluster_sequences[i_medianne], cluster_sequences[j_medianne])
+                    yara_strings = filter_yara_strings(yara_strings)
             
-            else:
-                pair=select_median_pair(cluster_sequences)
-                if pair is None:
-                    yara_strings=[]
-                else:
-                    i_med, j_med = pair
-                    a = cluster_sequences[i_med][:200_000]
-                    b = cluster_sequences[j_med][:200_000]
-                    yara_strings = align_and_build_yara_strings(a, b)
-                    yara_strings=filter_yara_strings(yara_strings)
             all_yara_strings.extend(yara_strings)
 
         time_to_build = monotonic() - start_time
