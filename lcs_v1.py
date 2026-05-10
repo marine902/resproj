@@ -203,9 +203,27 @@ def cluster_samples(sequences: list[bytes], logger: logging.Logger):
         if s not in clusters:
             clusters[s]=[]
         clusters[s].append(i)
-    
-    result=list(clusters.values())
-    logger.info(f"Clustering results:{len(result)} clusters formed")
+
+
+    result = list(clusters.values())
+
+    # Fallback : si tous les clusters sont singletons, forcer le merge des 2 plus proches
+    if all(len(c) == 1 for c in result) and len(result) > 1:
+        # Trouver la paire la plus proche
+        best_pair = min(all_distances.items(), key=lambda x: x[1])
+        (i, j), _ = best_pair
+        union(i, j)
+        # Reconstruire les clusters
+        clusters = {}
+        for i in range(n):
+            s = find(i)
+            if s not in clusters:
+                clusters[s] = []
+            clusters[s].append(i)
+        result = list(clusters.values())
+        logger.info(f"Fallback: forced merge of closest pair → {len(result)} clusters")
+
+    logger.info(f"Clustering results: {len(result)} clusters formed")
     return result
 
 
