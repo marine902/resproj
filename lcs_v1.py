@@ -153,7 +153,7 @@ def build_distance_heap(items: Dict[int, bytes], active_ids: set[int], pool=None
 #parameters clustering
 
 cluster_sample_bytes=10000 #take only the first 10KB of each sample to compute the distance for clustering to make distance computation more fast
-cluster_threshold=0.8 #seuil behind it 2 samples are merged in the same cluster if their distance is whithin
+cluster_norm_threshold=0.3 #seuil behind it 2 samples are merged in the same cluster if their normalized distance is within
 
 
 def cluster_samples(sequences: list[bytes], logger: logging.Logger):
@@ -189,14 +189,10 @@ def cluster_samples(sequences: list[bytes], logger: logging.Logger):
             d=edlib.align(prefix[i],prefix[j], mode="NW", task="distance")["editDistance"]
             all_distances[(i, j)] = d
     
-    if all_distances:
-        max_distance=max(all_distances.values()) 
-    else:
-        max_distance=0
-    threshold_distance=cluster_threshold*max_distance
 
     for (i, j), d in all_distances.items():
-        if d<=threshold_distance:
+        norm_d=d/max(len(prefix[i]), len(prefix[j]))
+        if norm_d<=cluster_norm_threshold:
             union(i,j) #if similar close, merge the clusters of the 2 samples
 
 
@@ -286,7 +282,7 @@ def k_lcs(sequences: list[bytes], *, logger: logging.Logger, workers: int) -> by
 
 
 #parameters for yara string 
-min_block_bytes=8
+min_block_bytes=16
 min_unique_ratio=0.25
 min_sequence_length=20
 max_sequence_ratio=0.85
@@ -393,7 +389,7 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
 min_block_size=16
 max_gap_size=50
 max_block_bytes=500
-max_strings_per_cluster=20
+max_strings_per_cluster=5
 
 
 
@@ -537,14 +533,15 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
 
 
 #parameters
-local_window_size=1024
-local_window_step=512
+local_window_size=2048
+local_window_step=1024
 local_min_match_ratio=0.4
 
 
-
+B_MAX = 200_000
 
 def local_align_and_build_yara_strings(a: bytes, b: bytes, window_size: int = local_window_size, window_step: int = local_window_step, min_match_ratio: float = local_min_match_ratio) -> list[str]:
+    b=b[:B_MAX]
     strings=[]
     seen_offsets=set() #to avoid generating 2 strings for the same region in b
 
@@ -729,6 +726,7 @@ def main():
         all_yara_strings = []
         
         for cluster in clusters:
+            yara_strings = []
             cluster_sequences = [sequences[i] for i in cluster]
             
             if args.local:
