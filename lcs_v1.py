@@ -153,7 +153,7 @@ def build_distance_heap(items: Dict[int, bytes], active_ids: set[int], pool=None
 #parameters clustering
 
 cluster_sample_bytes=10000 #take only the first 10KB of each sample to compute the distance for clustering to make distance computation more fast
-cluster_norm_threshold=0.3 #seuil behind it 2 samples are merged in the same cluster if their normalized distance is within
+cluster_threshold=0.8 #seuil behind it 2 samples are merged in the same cluster if their distance is whithin
 
 
 def cluster_samples(sequences: list[bytes], logger: logging.Logger):
@@ -189,10 +189,14 @@ def cluster_samples(sequences: list[bytes], logger: logging.Logger):
             d=edlib.align(prefix[i],prefix[j], mode="NW", task="distance")["editDistance"]
             all_distances[(i, j)] = d
     
+    if all_distances:
+        max_distance=max(all_distances.values()) 
+    else:
+        max_distance=0
+    threshold_distance=cluster_threshold*max_distance
 
     for (i, j), d in all_distances.items():
-        norm_d=d/max(len(prefix[i]), len(prefix[j]))
-        if norm_d<=cluster_norm_threshold:
+        if d<=threshold_distance:
             union(i,j) #if similar close, merge the clusters of the 2 samples
 
 
@@ -203,27 +207,9 @@ def cluster_samples(sequences: list[bytes], logger: logging.Logger):
         if s not in clusters:
             clusters[s]=[]
         clusters[s].append(i)
-
-
-    result = list(clusters.values())
-
-    # Fallback : si tous les clusters sont singletons, forcer le merge des 2 plus proches
-    if all(len(c) == 1 for c in result) and len(result) > 1:
-        # Trouver la paire la plus proche
-        best_pair = min(all_distances.items(), key=lambda x: x[1])
-        (i, j), _ = best_pair
-        union(i, j)
-        # Reconstruire les clusters
-        clusters = {}
-        for i in range(n):
-            s = find(i)
-            if s not in clusters:
-                clusters[s] = []
-            clusters[s].append(i)
-        result = list(clusters.values())
-        logger.info(f"Fallback: forced merge of closest pair → {len(result)} clusters")
-
-    logger.info(f"Clustering results: {len(result)} clusters formed")
+    
+    result=list(clusters.values())
+    logger.info(f"Clustering results:{len(result)} clusters formed")
     return result
 
 
@@ -300,7 +286,7 @@ def k_lcs(sequences: list[bytes], *, logger: logging.Logger, workers: int) -> by
 
 
 #parameters for yara string 
-min_block_bytes=16
+min_block_bytes=8
 min_unique_ratio=0.25
 min_sequence_length=20
 max_sequence_ratio=0.85
@@ -379,13 +365,6 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
         if unique_ratio < 0.10:
             continue
 
-        if bytes_only[:4] == ['00', '00', '00', '00']:
-            continue
-
-        gap_tokens = [t for t in tockens if t.startswith('[')]
-        if len(gap_tokens) > 3:
-            continue
-
         byte_vals = [int(t, 16) for t in bytes_only]
         differences = [byte_vals[i+1] - byte_vals[i] for i in range(len(byte_vals)-1)]
         if len(differences) > 20 and sum(1 for d in differences if d == 1) / len(differences) > 0.85:
@@ -407,7 +386,7 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
 min_block_size=16
 max_gap_size=50
 max_block_bytes=500
-max_strings_per_cluster=5
+max_strings_per_cluster=20
 
 
 
@@ -551,15 +530,14 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
 
 
 #parameters
-local_window_size=2048
-local_window_step=1024
+local_window_size=1024
+local_window_step=512
 local_min_match_ratio=0.4
 
 
-B_MAX = 200_000
+
 
 def local_align_and_build_yara_strings(a: bytes, b: bytes, window_size: int = local_window_size, window_step: int = local_window_step, min_match_ratio: float = local_min_match_ratio) -> list[str]:
-    b=b[:B_MAX]
     strings=[]
     seen_offsets=set() #to avoid generating 2 strings for the same region in b
 
@@ -744,7 +722,6 @@ def main():
         all_yara_strings = []
         
         for cluster in clusters:
-            yara_strings = []
             cluster_sequences = [sequences[i] for i in cluster]
             
             if args.local:
