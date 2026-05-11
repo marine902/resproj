@@ -153,7 +153,7 @@ def build_distance_heap(items: Dict[int, bytes], active_ids: set[int], pool=None
 #parameters clustering
 
 cluster_sample_bytes=10000 #take only the first 10KB of each sample to compute the distance for clustering to make distance computation more fast
-cluster_threshold=0.65 #seuil behind it 2 samples are merged in the same cluster if their distance is whithin
+cluster_threshold=0.8 #seuil behind it 2 samples are merged in the same cluster if their distance is whithin
 
 
 def cluster_samples(sequences: list[bytes], logger: logging.Logger):
@@ -286,7 +286,7 @@ def k_lcs(sequences: list[bytes], *, logger: logging.Logger, workers: int) -> by
 
 
 #parameters for yara string 
-min_block_bytes=6
+min_block_bytes=8
 min_unique_ratio=0.25
 min_sequence_length=20
 max_sequence_ratio=0.85
@@ -383,10 +383,10 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
 
 
 #parameters
-min_block_size=12
+min_block_size=16
 max_gap_size=50
 max_block_bytes=500
-max_strings_per_cluster=30
+max_strings_per_cluster=20
 
 
 
@@ -532,7 +532,7 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
 #parameters
 local_window_size=1024
 local_window_step=512
-local_min_match_ratio=0.3
+local_min_match_ratio=0.4
 
 
 
@@ -722,8 +722,7 @@ def main():
         all_yara_strings = []
         
         for cluster in clusters:
-            cluster_sequences=[sequences[i] for i in cluster]
-            yara_strings=[]
+            cluster_sequences = [sequences[i] for i in cluster]
             
             if args.local:
                 pairs=[]
@@ -738,11 +737,8 @@ def main():
                     medianne=statistics.median([d for d, i, j in pairs])
                     best_pair=min(pairs, key=lambda x: abs(x[0]-medianne))
                     _,i_medianne,j_medianne = best_pair
-                    yara_strings_raw = local_align_and_build_yara_strings(cluster_sequences[i_medianne], cluster_sequences[j_medianne])
-                    yara_strings = filter_yara_strings(yara_strings_raw)
-
-                    if not yara_strings:
-                        yara_strings = yara_strings_raw
+                    yara_strings = local_align_and_build_yara_strings(cluster_sequences[i_medianne], cluster_sequences[j_medianne])
+                    yara_strings = filter_yara_strings(yara_strings)
             
             all_yara_strings.extend(yara_strings)
 
