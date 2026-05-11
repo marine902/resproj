@@ -532,7 +532,7 @@ def align_and_build_yara_strings(a: bytes, b: bytes, max_block_bytes: int = max_
 #parameters
 local_window_size=1024
 local_window_step=512
-local_min_match_ratio=0.4
+local_min_match_ratio=0.1
 
 
 
