@@ -384,7 +384,7 @@ def filter_yara_strings(strings: list[str], max_null_ratio: float = 0.3) -> list
 
 #parameters
 min_block_size=16
-max_gap_size=10
+max_gap_size=20
 max_block_bytes=500
 max_strings_per_cluster=20
 
